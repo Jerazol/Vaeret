@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Weather compare — yr.no vs Open-Meteo</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a212b;
+    --panel-2: #222c38;
+    --line: #2c3744;
+    --ink: #e8edf2;
+    --muted: #8a99a8;
+    --accent: #4ea1ff;
+    --warm: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 15px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    padding: 24px 16px 64px;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; font-weight: 650; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 20px; }
+  input[type=search] {
+    flex: 1 1 220px; min-width: 0;
+    background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+    padding: 10px 12px; border-radius: 10px; font-size: 15px;
+  }
+  button {
+    background: var(--accent); color: #06131f; border: 0; font-weight: 600;
+    padding: 10px 16px; border-radius: 10px; cursor: pointer; font-size: 15px;
+  }
+  button.ghost { background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
+  button.ghost[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .place { font-size: 13px; color: var(--muted); margin: -10px 0 18px; min-height: 18px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .phead { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; justify-content: space-between; }
+  .phead b { font-size: 15px; }
+  .phead span { font-size: 12px; color: var(--muted); }
+  .row { display: grid; grid-template-columns: 56px 28px 1fr auto; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--panel-2); }
+  .row:last-child { border-bottom: 0; }
+  .row .t { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .row .ic { font-size: 18px; text-align: center; }
+  .row .temp { font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; }
+  .row .precip { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .row .precip.dry { color: var(--muted); opacity: .5; }
+  .msg { padding: 16px 14px; color: var(--muted); font-size: 13px; }
+  .err { color: #ff8e8e; }
+  .foot { color: var(--muted); font-size: 12px; margin-top: 22px; line-height: 1.6; }
+  .foot code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Weather compare</h1>
+  <p class="sub">Two forecasts, side by side — like pent.no. Source A is MET Norway (the data behind yr.no); source B is Open-Meteo's own model.</p>
+
+  <form class="controls" id="form">
+    <input type="search" id="q" placeholder="Search a place… e.g. Tromsø, Oslo, Bergen" autocomplete="off" />
+    <button type="submit">Forecast</button>
+    <button type="button" class="ghost" id="tab-hourly" aria-pressed="true">Hourly</button>
+    <button type="button" class="ghost" id="tab-daily" aria-pressed="false">5-day</button>
+  </form>
+  <div class="place" id="place"></div>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="phead"><b>yr.no</b><span>MET Norway</span></div>
+      <div id="metBody"><div class="msg">Search for a place to begin.</div></div>
+    </div>
+    <div class="panel">
+      <div class="phead"><b>Open-Meteo</b><span>own model</span></div>
+      <div id="omBody"><div class="msg">Search for a place to begin.</div></div>
+    </div>
+  </div>
+
+  <p class="foot">
+    Geocoding &amp; source B: <code>open-meteo.com</code> (free, no key, CORS-enabled).
+    Source A: <code>api.met.no</code> — see their <a href="https://api.met.no/doc/TermsOfService" style="color:var(--accent)">terms</a>; browser calls are fine for personal use but discouraged at scale.
+    To add a real <b>Storm / TV 2 (StormGeo)</b> column you'd need a small CORS proxy — there's no public browser-callable endpoint.
+  </p>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let view = "hourly";        // "hourly" | "daily"
+let last = null;            // { name, lat, lon }
+
+// ---- weather-code -> emoji mappers -------------------------------------
+// MET symbol_code is a string like "partlycloudy_day", "lightrain", "snow"...
+function metIcon(code = "") {
+  const c = code.toLowerCase();
+  if (c.includes("thunder")) return "⛈️";
+  if (c.includes("sleet")) return "🌨️";
+  if (c.includes("snow")) return "❄️";
+  if (c.includes("rain") || c.includes("showers")) return "🌧️";
+  if (c.includes("fog")) return "🌫️";
+  if (c.includes("partlycloudy") || c.includes("fair")) return "⛅";
+  if (c.includes("cloudy")) return "☁️";
+  if (c.includes("clearsky")) return c.includes("night") ? "🌙" : "☀️";
+  return "•";
+}
+// Open-Meteo uses WMO weather codes (integers).
+function wmoIcon(code) {
+  if (code === 0) return "☀️";
+  if (code <= 2) return "⛅";
+  if (code === 3) return "☁️";
+  if (code === 45 || code === 48) return "🌫️";
+  if (code >= 51 && code <= 67) return "🌧️";
+  if (code >= 71 && code <= 77) return "❄️";
+  if (code >= 80 && code <= 82) return "🌧️";
+  if (code >= 85 && code <= 86) return "🌨️";
+  if (code >= 95) return "⛈️";
+  return "•";
+}
+
+// ---- fetchers: each returns { hourly:[...], daily:[...] } ----------------
+async function fetchMet(lat, lon) {
+  // NOTE: browser can't set User-Agent; MET reads the Origin header instead.
+  const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`MET ${r.status}`);
+  const js = await r.json();
+  const ts = js.properties.timeseries;
+
+  const hourly = ts.slice(0, 24).map(e => {
+    const d = e.data;
+    const next = d.next_1_hours || d.next_6_hours || {};
+    return {
+      time: new Date(e.time),
+      temp: d.instant.details.air_temperature,
+      precip: next.details ? next.details.precipitation_amount : null,
+      icon: metIcon(next.summary && next.summary.symbol_code),
+    };
+  });
+
+  // Aggregate into local days for the 5-day view.
+  const buckets = {};
+  for (const e of ts) {
+    const dt = new Date(e.time);
+    const key = dt.toLocaleDateString("en-CA"); // YYYY-MM-DD local
+    const b = buckets[key] || (buckets[key] = { tmax: -99, tmin: 99, precip: 0, noon: null, date: dt });
+    const t = e.data.instant.details.air_temperature;
+    b.tmax = Math.max(b.tmax, t); b.tmin = Math.min(b.tmin, t);
+    const six = e.data.next_6_hours, one = e.data.next_1_hours;
+    if (six && six.details) b.precip += six.details.precipitation_amount || 0;
+    else if (one && one.details) b.precip += one.details.precipitation_amount || 0;
+    // grab a representative midday symbol
+    if (dt.getHours() >= 12 && dt.getHours() <= 15 && (six || one)) {
+      b.noon = ((six || one).summary || {}).symbol_code;
+    }
+  }
+  const daily = Object.values(buckets).slice(0, 5).map(b => ({
+    date: b.date, tmax: b.tmax, tmin: b.tmin, precip: b.precip, icon: metIcon(b.noon),
+  }));
+  return { hourly, daily };
+}
+
+async function fetchOpenMeteo(lat, lon) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
+    + `&hourly=temperature_2m,precipitation,weather_code`
+    + `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum`
+    + `&forecast_days=5&timezone=auto`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Open-Meteo ${r.status}`);
+  const js = await r.json();
+
+  const now = Date.now();
+  const h = js.hourly;
+  const hourly = [];
+  for (let i = 0; i < h.time.length && hourly.length < 24; i++) {
+    const t = new Date(h.time[i]);
+    if (t.getTime() < now - 3600e3) continue; // skip past hours
+    hourly.push({ time: t, temp: h.temperature_2m[i], precip: h.precipitation[i], icon: wmoIcon(h.weather_code[i]) });
+  }
+  const d = js.daily;
+  const daily = d.time.map((t, i) => ({
+    date: new Date(t + "T12:00"),
+    tmax: d.temperature_2m_max[i], tmin: d.temperature_2m_min[i],
+    precip: d.precipitation_sum[i], icon: wmoIcon(d.weather_code[i]),
+  }));
+  return { hourly, daily };
+}
+
+// ---- rendering -----------------------------------------------------------
+const hhmm = d => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+const dayName = d => d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+const num = (v, dp = 0) => v == null ? "–" : v.toFixed(dp);
+
+function renderRows(data) {
+  const rows = view === "hourly" ? data.hourly : data.daily;
+  if (!rows || !rows.length) return `<div class="msg">No data.</div>`;
+  return rows.map(r => {
+    const label = view === "hourly" ? hhmm(r.time) : dayName(r.date);
+    const temp = view === "hourly"
+      ? `${num(r.temp)}°`
+      : `<span style="color:var(--warm)">${num(r.tmax)}°</span> / ${num(r.tmin)}°`;
+    const p = r.precip;
+    const pTxt = (p == null) ? "" : (p >= 0.05 ? `${num(p, 1)} mm` : "0");
+    const pCls = (p == null || p < 0.05) ? "precip dry" : "precip";
+    return `<div class="row">
+      <span class="t">${label}</span>
+      <span class="ic">${r.icon}</span>
+      <span class="${pCls}">${pTxt}</span>
+      <span class="temp">${temp}</span>
+    </div>`;
+  }).join("");
+}
+
+function paint() {
+  if (!last || !last.met) return;
+  $("#metBody").innerHTML = last.met instanceof Error
+    ? `<div class="msg err">Couldn't load MET: ${last.met.message}</div>`
+    : renderRows(last.met);
+  $("#omBody").innerHTML = last.om instanceof Error
+    ? `<div class="msg err">Couldn't load Open-Meteo: ${last.om.message}</div>`
+    : renderRows(last.om);
+}
+
+async function geocode(q) {
+  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=1&language=en`;
+  const r = await fetch(url);
+  const js = await r.json();
+  if (!js.results || !js.results.length) throw new Error("Place not found");
+  const g = js.results[0];
+  return { lat: g.latitude, lon: g.longitude, name: [g.name, g.admin1, g.country].filter(Boolean).join(", ") };
+}
+
+async function run(q) {
+  $("#place").textContent = "Searching…";
+  $("#metBody").innerHTML = $("#omBody").innerHTML = `<div class="msg">Loading…</div>`;
+  let loc;
+  try { loc = await geocode(q); }
+  catch (e) { $("#place").innerHTML = `<span class="err">${e.message}</span>`; return; }
+
+  $("#place").textContent = `${loc.name}  ·  ${loc.lat.toFixed(3)}, ${loc.lon.toFixed(3)}`;
+  // fire both in parallel; keep partial results if one fails
+  const [met, om] = await Promise.all([
+    fetchMet(loc.lat, loc.lon).catch(e => e),
+    fetchOpenMeteo(loc.lat, loc.lon).catch(e => e),
+  ]);
+  last = { ...loc, met, om };
+  paint();
+}
+
+// ---- wiring --------------------------------------------------------------
+$("#form").addEventListener("submit", e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) run(q); });
+function setView(v) {
+  view = v;
+  $("#tab-hourly").setAttribute("aria-pressed", v === "hourly");
+  $("#tab-daily").setAttribute("aria-pressed", v === "daily");
+  paint();
+}
+$("#tab-hourly").addEventListener("click", () => setView("hourly"));
+$("#tab-daily").addEventListener("click", () => setView("daily"));
+</script>
+</body>
+</html>
